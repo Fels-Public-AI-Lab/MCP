@@ -90,7 +90,7 @@ Your code has comments about omitted tools. Add these back:
 ```python
 @mcp.tool(name="philly_search_properties")
 async def philly_search_properties(params: PropertySearchInput) -> str:
-    """Search properties by address, owner, parcel number, or ZIP code."""
+    """Search properties by address, parcel number, or ZIP code."""
     # Implementation needed
     pass
 
