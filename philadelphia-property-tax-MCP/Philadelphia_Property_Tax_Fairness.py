@@ -204,7 +204,6 @@ class PropertySearchInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True, extra='forbid')
 
     address: Optional[str] = Field(default=None, description="Street address", max_length=200)
-    owner_name: Optional[str] = Field(default=None, description="Owner name", max_length=200)
     parcel_number: Optional[str] = Field(default=None, description="Parcel number", min_length=5, max_length=20)
     zip_code: Optional[str] = Field(default=None, description="5-digit ZIP code", min_length=5, max_length=5)
     limit: Optional[int] = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT)
@@ -740,7 +739,7 @@ async def philly_search_assessments(params: AssessmentSearchInput) -> str:
 )
 async def philly_search_properties(params: PropertySearchInput) -> str:
     """
-    Search properties by address, owner, parcel number, or ZIP code.
+    Search properties by address, parcel number, or ZIP code.
     
     Basic search across the properties table which contains current property information.
     """
@@ -749,12 +748,6 @@ async def philly_search_properties(params: PropertySearchInput) -> str:
         
         if params.address:
             conditions.append(f"location ILIKE '%{params.address.upper()}%'")
-        if params.owner_name:
-            owner_condition = (
-                f"(owner_1 ILIKE '%{params.owner_name.upper()}%' OR "
-                f"owner_2 ILIKE '%{params.owner_name.upper()}%')"
-            )
-            conditions.append(owner_condition)
         if params.parcel_number:
             conditions.append(f"parcel_number = '{params.parcel_number}'")
         if params.zip_code:

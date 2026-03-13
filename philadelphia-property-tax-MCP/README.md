@@ -334,6 +334,10 @@ async def philly_search_recent_sales(params: RecentSalesInput) -> str:
 **GET /health**
 - Health check endpoint
 
+## 🛡️ Design Decisions & Privacy Considerations
+
+This tool displays owner names when looking up a property by address, consistent with Philadelphia's public records. However, reverse owner lookup (searching all properties by owner name) has been intentionally disabled. The goal is property-level transparency, not owner-level surveillance. AI tools significantly reduce the friction of aggregating public records, and this project errs on the side of the city's apparent intent rather than the maximum technically permissible access.
+
 ## 🔐 Security Notes
 
 - Never commit your `.env` file
