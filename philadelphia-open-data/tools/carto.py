@@ -3,6 +3,9 @@ Philadelphia CARTO SQL API tools.
 
 Provides schema inspection and read-only SQL query execution for Philadelphia
 open data tables hosted on the City's CARTO instance (phl.carto.com).
+
+Field dictionaries are loaded at startup from data/dictionaries/*.csv.
+Each CSV maps to its CARTO table name (e.g. opa_properties_public.csv).
 """
 
 from tools import mcp
@@ -12,6 +15,8 @@ from enum import Enum
 import httpx
 import json
 import re
+import csv
+from pathlib import Path
 from datetime import datetime, timedelta
 import asyncio
 
@@ -29,6 +34,100 @@ KNOWN_TABLES: Dict[str, str] = {
     "parking_violations": "Philadelphia Parking Authority parking violation notices",
     "opa_properties_public": "Office of Property Assessment — property records and valuations",
 }
+
+
+# ==================== DATA DICTIONARIES ====================
+
+_DICT_DIR = Path(__file__).parent.parent / "data" / "dictionaries"
+_HTML_TAG_RE = re.compile(r'<[^>]+>')
+
+
+def _clean(text: str) -> str:
+    """Strip HTML tags and collapse whitespace."""
+    return re.sub(r'\s+', ' ', _HTML_TAG_RE.sub(' ', text or '')).strip()
+
+
+def _parse_code_labels(description: str) -> Dict[str, str]:
+    """
+    Extract code→label mappings from OPA-style description text.
+
+    Handles patterns like:
+      "0. Not Applicable"
+      "A. Full Finished – Occupies the entire area..."   → "Full Finished"
+      "1. NEWER CONSTRUCTION – Noticeably newer..."      → "NEWER CONSTRUCTION"
+      "a. Natural Gas"
+      "c. Electric (usually in excess of 150 amps)"      → "Electric"
+
+    Strategy: capture everything after the code up to the end of the segment,
+    then truncate at the first em-dash / spaced hyphen / parenthesis,
+    which separates the short label from the prose explanation.
+    """
+    codes: Dict[str, str] = {}
+    # Match code patterns following newlines, HTML close-tags (>), or start of string
+    for m in re.finditer(
+        r'(?:^|[\n>])\s*([0-9a-zA-ZØ]+)\.\s+(.*?)(?=\s*(?:<|\n|$))',
+        description,
+        re.MULTILINE,
+    ):
+        code = m.group(1).strip()
+        raw = m.group(2).strip()
+        if not raw:
+            continue
+        # Truncate at em-dash, spaced hyphen/dash, or opening parenthetical
+        label = re.split(r'\s+[–—]\s+|\s+-\s+|\s+\(', raw)[0].strip().rstrip('.,')
+        # Skip codes that look like regular English words rather than categorical
+        # codes — e.g. "Code" appearing in "City Code." mid-sentence.
+        # Real codes are: single char (A, a, Ø), digits (0–9), or ALL-CAPS (NONE).
+        if len(code) > 2 and code.isalpha() and not code.isupper():
+            continue
+        # Keep labels that are non-trivial but not so long they're prose sentences
+        if 2 <= len(label) <= 50:
+            codes[code] = label
+    return codes
+
+
+def _load_dictionaries() -> Dict[str, Dict[str, Dict]]:
+    """
+    Load all CSV dictionaries from data/dictionaries/.
+
+    Returns:
+        {
+            table_name: {
+                field_name_lower: {
+                    "alias":       str,
+                    "description": str (HTML-stripped, full text),
+                    "codes":       {code: label} or {} if no coded values
+                }
+            }
+        }
+    """
+    result: Dict[str, Dict[str, Dict]] = {}
+    if not _DICT_DIR.exists():
+        return result
+    for csv_path in sorted(_DICT_DIR.glob("*.csv")):
+        table = csv_path.stem
+        fields: Dict[str, Dict] = {}
+        try:
+            with open(csv_path, newline='', encoding='utf-8-sig') as f:
+                for row in csv.DictReader(f):
+                    name = (row.get("Field Name") or "").strip().lower()
+                    if not name:
+                        continue
+                    raw_desc = row.get("Description") or ""
+                    desc = _clean(raw_desc)
+                    fields[name] = {
+                        "alias":       (row.get("Alias") or "").strip(),
+                        "description": desc,
+                        "codes":       _parse_code_labels(raw_desc),
+                    }
+        except Exception:
+            pass
+        result[table] = fields
+    return result
+
+
+# Loaded once at module import; shared by both tools.
+DICTIONARIES: Dict[str, Dict[str, Dict]] = _load_dictionaries()
 
 
 # ==================== RATE LIMITER ====================
@@ -195,16 +294,39 @@ async def carto_get_schema(params: CartoSchemaInput) -> str:
                 "fields": fields,
             }, indent=2)
 
-        description = KNOWN_TABLES.get(params.table_name, "")
+        table_desc = KNOWN_TABLES.get(params.table_name, "")
+        dict_fields = DICTIONARIES.get(params.table_name, {})
+        has_dict = bool(dict_fields)
+
         output = f"# Schema: `{params.table_name}`\n\n"
-        if description:
-            output += f"**Description**: {description}\n\n"
+        if table_desc:
+            output += f"**Description**: {table_desc}\n\n"
+        if has_dict:
+            output += "_Field descriptions from OpenDataPhilly metadata._\n\n"
         output += f"**Columns** ({len(fields)}):\n\n"
-        output += "| Column | Type |\n"
-        output += "|--------|------|\n"
-        for col_name, col_meta in fields.items():
-            col_type = col_meta.get("type", "unknown") if isinstance(col_meta, dict) else str(col_meta)
-            output += f"| `{col_name}` | {col_type} |\n"
+
+        if has_dict:
+            output += "| Column | Type | Description |\n"
+            output += "|--------|------|-------------|\n"
+            for col_name, col_meta in fields.items():
+                col_type = col_meta.get("type", "unknown") if isinstance(col_meta, dict) else str(col_meta)
+                field_info = dict_fields.get(col_name.lower(), {})
+                alias = field_info.get("alias", "")
+                desc = field_info.get("description", "")
+                # Show alias in parens if it differs from the column name
+                label = f"{desc}"
+                if alias and alias.lower() != col_name.lower():
+                    label = f"**{alias}** — {desc}" if desc else alias
+                # Truncate long descriptions so the table stays readable
+                if len(label) > 120:
+                    label = label[:117] + "..."
+                output += f"| `{col_name}` | {col_type} | {label} |\n"
+        else:
+            output += "| Column | Type |\n"
+            output += "|--------|------|\n"
+            for col_name, col_meta in fields.items():
+                col_type = col_meta.get("type", "unknown") if isinstance(col_meta, dict) else str(col_meta)
+                output += f"| `{col_name}` | {col_type} |\n"
 
         return output
 
@@ -275,10 +397,20 @@ async def carto_query(params: CartoQueryInput) -> str:
 
         if rows:
             cols = list(rows[0].keys())
+            dict_fields = DICTIONARIES.get(params.table_name, {})
             output += "| " + " | ".join(cols) + " |\n"
             output += "| " + " | ".join(["---"] * len(cols)) + " |\n"
             for row in rows:
-                values = [str(row.get(c, ""))[:60].replace("|", "\\|") for c in cols]
+                values = []
+                for c in cols:
+                    raw = str(row.get(c, "") or "")
+                    # Inline decode: if this field has code labels and the
+                    # raw value matches a code, append the label in parens.
+                    field_info = dict_fields.get(c.lower(), {})
+                    codes = field_info.get("codes", {})
+                    if codes and raw in codes:
+                        raw = f"{raw} ({codes[raw]})"
+                    values.append(raw[:80].replace("|", "\\|"))
                 output += "| " + " | ".join(values) + " |\n"
 
         return output[:CHARACTER_LIMIT]
