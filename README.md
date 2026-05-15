@@ -17,6 +17,8 @@ and APIs, enabling natural language interaction with government data systems.
 | Server | Description | Status |
 |--------|-------------|--------|
 | Philadelphia Property Tax | Connects to Philadelphia's property assessment and tax data via the CARTO API | Active |
+| Philadelphia Open Data | Connects to Philadelphia open data catalog, CARTO tables, and property assessment workflows | Active |
+| Baltimore Open Data | Connects to Baltimore ArcGIS Open Data and Enterprise GIS services | Active |
 
 ## Getting Started
 
